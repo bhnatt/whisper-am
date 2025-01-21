@@ -31,7 +31,7 @@ def getParts (srt_list, split_length) : ### length of a part in seconds
     
     for sub in srt_list :
         index   = sub.index
-        content = sub.content
+        content = sub.content.strip () ### modifed 20250122 to prevent preceeding space
         st      = sub.start.total_seconds ()
         et      = sub.end.total_seconds ()
         
