@@ -1,0 +1,6 @@
+faster-whisper
+python-docx
+srt
+nltk
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*

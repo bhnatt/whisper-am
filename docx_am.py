@@ -2,7 +2,8 @@ import nltk
 from nltk.tokenize import sent_tokenize
 import srt
 
-nltk.download ('punkt')
+nltk.download ('punkt', quiet=True)
+nltk.download ('punkt_tab', quiet=True) ### required by sent_tokenize since nltk 3.8.2
 
 
 def getSrt (srt_fn) :
@@ -26,6 +27,8 @@ def getSrt (srt_fn) :
 ### 시간 기준으로 전체 문서를 나눔
 def getParts (srt_list, split_length) : ### length of a part in seconds
     split_time = split_length
+    split_time_boundary = split_length - min (100, split_length // 4) ### look for a sentence end from 100s (at most) before the split time
+    last_time = srt_list [-1].end.total_seconds () if srt_list else 0
     text_lines = []
     start_time = -1
     
@@ -41,7 +44,14 @@ def getParts (srt_list, split_length) : ### length of a part in seconds
         if content != 'CHEERING AND APPLAUSE' :
             text_lines.append (content)
 
-        if st < split_time : continue
+        if st <= split_time_boundary : continue ### not yet near the split point
+        if split_time > last_time : continue ### no more split. the rest belongs to the last part
+
+        last_char = content [-1] if content else ''
+        if last_char not in ['"', '.', '?'] : continue ### split only at the end of a sentence
+        split_time_boundary += split_length
+
+        #if st < split_time : continue
         
         #print ('###', index, st, content)
         text = ' '.join (text_lines)

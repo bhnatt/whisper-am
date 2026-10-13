@@ -4,14 +4,13 @@ from docx import Document
 from docx.shared import Pt
 from docx_am import makeDocx
 
-import ffmpeg
 import glob
-import numpy as np
 import os
 from os.path import basename
 import re
+import subprocess
+import tempfile
 import time
-import torch
 from whisper_utils import write_txt, write_srt
 from zipfile import ZipFile
 # from br2us import british_to_american
@@ -55,7 +54,7 @@ def mountDrive () :
 
             
 class WhisperAM :
-    def __init__ (self, model_name, data_dir, out_dir='', initial_prompt="", doc_download=True, beam_size=5, FASTER=True) :
+    def __init__ (self, model_name, data_dir, out_dir='', initial_prompt="", doc_download=True, beam_size=5, FASTER=True, skip_existing=False) :
         self.model_name     = model_name
         self.data_dir       = data_dir
         self.out_dir        = out_dir if out_dir != '' else data_dir
@@ -63,6 +62,7 @@ class WhisperAM :
         self.doc_download   = doc_download
         self.beam_size      = beam_size
         self.FASTER         = FASTER
+        self.skip_existing  = skip_existing ### skip audio files which already have a docx in out_dir
         
         isExist = os.path.exists (self.out_dir)
         if not isExist :
@@ -75,8 +75,14 @@ class WhisperAM :
         # make sure if it shows 'cuda' which means gpu ready
         # if not, change the runtime type : menu > runtime > change runtime type > select GPU, then start from the beginning again
 
-        torch.cuda.is_available ()
-        self.DEVICE = "cuda" if torch.cuda.is_available () else "cpu"
+        if self.FASTER :
+            import ctranslate2
+            has_cuda = ctranslate2.get_cuda_device_count () > 0
+        else :
+            import torch
+            has_cuda = torch.cuda.is_available ()
+
+        self.DEVICE = "cuda" if has_cuda else "cpu"
             
         return self.DEVICE
     ###
@@ -85,7 +91,8 @@ class WhisperAM :
     #@title Whisper model selection : medium.en (default)
     def loadModel (self) :
         if self.FASTER :
-            self.model = WhisperModel (self.model_name, device=self.DEVICE, compute_type="float16") ### faster whisper
+            compute_type = "float16" if self.DEVICE == "cuda" else "int8" ### float16 is not supported on cpu
+            self.model = WhisperModel (self.model_name, device=self.DEVICE, compute_type=compute_type) ### faster whisper
         else :
             self.model = whisper.load_model (self.model_name) ### default whisper
 
@@ -121,7 +128,7 @@ class WhisperAM :
         # options = dict (language='English', beam_size=self.beam_size, best_of=5)
         #options = dict (language='English', beam_size=self.beam_size, best_of=5, vad_filter=True)
         # options = dict (language='en', beam_size=self.beam_size, best_of=5, vad_filter=True)
-        options = dict (language='en', beam_size=self.beam_size, best_of=5, vad_filter=True, vad_parameters=dict(min_silence_duration_ms=1000)) ### duration_ms를 늘리면 빠른 구술시 처리가 밀리는 현상이 발생
+        options = dict (language='en', beam_size=self.beam_size, best_of=5, vad_filter=True, vad_parameters=dict(min_silence_duration_ms=650)) ### duration_ms를 늘리면 빠른 구술시 처리가 밀리는 현상이 발생. 650ms에서 가장 안정적임.
         
         transcribe_options = dict (task="transcribe", **options)
         
@@ -254,12 +261,10 @@ class WhisperAM :
     ### https://www.programcreek.com/python/example/117479/ffmpeg.output
     @staticmethod
     def downSample (in_name, out_name) :
-        try :
-            audio  = ffmpeg.input  (in_name).audio
-            stream = ffmpeg.output (audio, out_name, **{'ar': '16000', 'acodec': 'mp3'}).overwrite_output ()
-            out    = ffmpeg.run    (stream, capture_stdout=True, capture_stderr=True)
-        except Exception as e :
-            print (e)
+        cmd = ['ffmpeg', '-nostdin', '-y', '-i', in_name, '-vn', '-ar', '16000', '-acodec', 'mp3', out_name]
+        proc = subprocess.run (cmd, capture_output=True, text=True)
+        if proc.returncode != 0 :
+            print (proc.stderr [-2000:])
     ###
     
     
@@ -308,10 +313,11 @@ class WhisperAM :
             print (source_file_name)
 
             target_name = '.'.join (source_file_name.split ('/') [-1].split ('.') [:-1])
-            if is_google_colab :
-                mp3_file_16k = '/content/' + target_name + '-16k.mp3'
-            else :
-                mp3_file_16k = self.data_dir + '/' + target_name + '-16k.mp3'
+            if self.skip_existing and os.path.exists (self.out_dir + target_name + '.docx') :
+                print ('skip : docx already exists')
+                continue
+
+            mp3_file_16k = os.path.join (tempfile.gettempdir (), target_name + '-16k.mp3')
 
             ### don't need to downsample. original file is better for whisper
             self.downSample (source_file_name, mp3_file_16k)
@@ -322,7 +328,7 @@ class WhisperAM :
             else :
                 result = self.transcribe (mp3_file_16k)
 
-            save_result = self.saveResult (target_name, self.data_dir, result)
+            save_result = self.saveResult (target_name, self.out_dir, result)
             text = save_result ['text']
             print (text [:50], '...', text [-50:])
             print ()
@@ -374,7 +380,7 @@ def test () :
     # model_name   = 'Systran/faster-distil-whisper-large-v3' ### not good : repetition
     # model_name   = 'Systran/faster-whisper-medium.en' ### not good : no punctuation
     # model_name   = 'deepdml/faster-whisper-large-v3-turbo-ct2' ### not good
-    model_name   = 'guillaumekln/faster-whisper-large-v2' ### 50ms로는 아직은 오류 없음
+    model_name   = 'guillaumekln/faster-whisper-large-v2' ### 50ms로는 아직은 오류 없음. 최종 결정 모델
 
     print (model_name)
 
